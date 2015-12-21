@@ -1,13 +1,6 @@
-/*
-
-openvpn --mktun --dev tun16
-ip link set tun16 up
-ip rule add iif tun16 table 50
-ip route add 0/0 dev eth1 table 50
-
-ip rule add to 192.168.32.99 table 40
-ip route add dev tun16 table 40
-*/
+/** 
+  * Graps text from stdin and sends it via UDP through dev/tun
+  */
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -114,7 +107,7 @@ int main(int argc, const char* argv[]) {
 
 	printf("Press CTRL+D to terminate program.\n");
 	printf("> ");
-	while (fgets(packet.buf, BUFFERSIZE , stdin)) {
+	while (fgets(packet.buf, BUFFERSIZE , stdin) != NULL) {
 		uint32_t dat_len = strlen(packet.buf);
 		uint32_t hdr_len = sizeof(struct udphdr)+sizeof(struct iphdr);
 		uint32_t pkg_len = hdr_len + dat_len;
