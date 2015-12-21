@@ -25,13 +25,11 @@ ip route add dev tun16 table 40
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
-#include <signal.h>
 
 #define BUFFERSIZE 1024
 
 static pthread_t tunread_thread_handle;
 static int fd_tun = -1;
-static int interrupted = 0;
 
 int tun_alloc(char *dev)
 {
@@ -53,15 +51,10 @@ int tun_alloc(char *dev)
 	return fd;
 }
 
-static void signal_terminate(int sig) {
-	printf("Received signal %d.\n", sig); fflush(stdout);
-	interrupted = sig;
-}
-
 void* run_rx_thread(void* dummy) {
 	int bytes;
 	char buffer[BUFFERSIZE];
-	while( !interrupted && (bytes=read(fd_tun, buffer, BUFFERSIZE)) > 0 ) {
+	while( (bytes=read(fd_tun, buffer, BUFFERSIZE)) > 0 ) {
 		printf("# %d bytes received from tunnel!\n", bytes);
 	}
 	return NULL;
@@ -107,7 +100,6 @@ int main(int argc, const char* argv[]) {
 	sprintf(tun_name, argv[1]);
 	inet_aton(argv[2], &source_ipv4);
 	inet_aton(argv[3], &stream_out_ipv4);
-	signal(SIGINT, signal_terminate);   // Ctrl-C
 
 	fd_tun = tun_alloc(tun_name);
 	if (fd_tun < 0) return 1;
@@ -122,33 +114,31 @@ int main(int argc, const char* argv[]) {
 
 	printf("Press CTRL+D to terminate program.\n");
 	printf("> ");
-	while (!interrupted && fgets(packet.buf, BUFFERSIZE , stdin)) {
-		uint32_t len = strlen(packet.buf);
-		memset(&packet, 0, sizeof(struct iphdr)+sizeof(struct udphdr));
+	while (fgets(packet.buf, BUFFERSIZE , stdin)) {
+		uint32_t dat_len = strlen(packet.buf);
+		uint32_t hdr_len = sizeof(struct udphdr)+sizeof(struct iphdr);
+		uint32_t pkg_len = hdr_len + dat_len;
+		memset(&packet, 0, hdr_len);
 
-		struct udphdr  *udph=(struct udphdr *)(packet.buf-sizeof(struct udphdr));
-		struct iphdr   *ip4h=(struct iphdr  *)(packet.buf-sizeof(struct udphdr)-sizeof(struct iphdr));
-		uint8_t *ipptr=(uint8_t *)ip4h;
-		uint32_t iplen=sizeof(struct udphdr)+sizeof(struct iphdr)+len;
-		ip4h->ihl      = 5;
-		ip4h->version  = 4;
-		ip4h->tos      = 0;
-		ip4h->tot_len  = iplen;
-		ip4h->id       = htons(0);
-		ip4h->frag_off = htons(0x4000);
-		ip4h->ttl      = 128;
-		ip4h->protocol = IPPROTO_UDP;
-		ip4h->check    = 0;
-		ip4h->saddr    = htonl(source_ipv4.s_addr);
-		ip4h->daddr    = htonl(stream_out_ipv4.s_addr);
-		ip4h->check    = csum((unsigned short *)ip4h, sizeof(struct iphdr));
+		packet.ip4_hdr.ihl      = 5;
+		packet.ip4_hdr.version  = 4;
+		packet.ip4_hdr.tos      = 0;
+		packet.ip4_hdr.tot_len  = pkg_len;
+		packet.ip4_hdr.id       = htons(0);
+		packet.ip4_hdr.frag_off = htons(0x4000);
+		packet.ip4_hdr.ttl      = 128;
+		packet.ip4_hdr.protocol = IPPROTO_UDP;
+		packet.ip4_hdr.check    = 0;
+		packet.ip4_hdr.saddr    = htonl(source_ipv4.s_addr);
+		packet.ip4_hdr.daddr    = htonl(stream_out_ipv4.s_addr);
+		packet.ip4_hdr.check    = csum((unsigned short *)&packet.ip4_hdr, sizeof(struct iphdr));
 
-		udph->source = htons(12345);
-		udph->dest   = htons(51000);
-		udph->len    = htons(len+8);
-		udph->check  = 0;
+		packet.udp_hdr.source = htons(12345);
+		packet.udp_hdr.dest   = htons(51000);
+		packet.udp_hdr.len    = htons(dat_len+8);
+		packet.udp_hdr.check  = 0;
 
-		int bytes = write(fd_tun, ipptr,iplen);
+		int bytes = write(fd_tun, &packet, pkg_len);
 		if (bytes < 0) {
 			int errsv = errno;
 			printf("# write to tunnel failed: %s\n", strerror(errsv));
@@ -156,7 +146,7 @@ int main(int argc, const char* argv[]) {
 			return 2;
 		}
 
-		printf("# Sent %d bytes (%d data-bytes) via tunnel!\n", bytes, len); fflush(stdout);
+		printf("# Sent %d bytes (%d data-bytes) via tunnel!\n", bytes, dat_len); fflush(stdout);
 		printf("> ");
 	}
 	close(fd_tun);
